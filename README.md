@@ -1,6 +1,8 @@
 # botCanal
 
-Bot en Python que descarga un PDF de calendario, extrae los partidos del equipo `I12` (o el código configurado), infiere la **fecha** desde los encabezados del PDF y detecta el **color de camiseta** (según el color de fondo de la celda donde aparece `I12`: `azul` o `blanco`).
+Bot en Python que descarga un PDF de calendario, infiere la **fecha** desde encabezados tipo `31 DE ENERO` y detecta el **color de camiseta** (según el color de fondo de cada celda: `azul` o `blanco`).
+
+Por defecto extrae **todos los equipos** del día de ejecución. Si no hay partidos hoy, devuelve la **próxima fecha disponible**.
 
 Genera:
 - `output/matches.json`
@@ -51,7 +53,7 @@ python bot.py
 python bot.py --pdf-url "https://.../calendario.pdf"
 ```
 
-### Cambiar equipo (opcional)
+### Filtrar por equipo (opcional)
 
 ```bash
 python bot.py --team I12
@@ -74,6 +76,7 @@ Estructura:
 - `generated_at`: timestamp UTC
 - `count`: número de coincidencias
 - `matches`: lista de objetos con:
+  - `team`: código de equipo
   - `date`: `YYYY-MM-DD`
   - `time`: `HH:MM`
   - `color`: `azul` | `blanco`
@@ -82,7 +85,7 @@ Estructura:
 
 Lista legible, una línea por partido:
 
-- `YYYY-MM-DD HH:MM azul|blanco`
+- `YYYY-MM-DD HH:MM TEAM azul|blanco`
 
 ---
 
@@ -130,6 +133,13 @@ Si no existen, el workflow correrá igual (solo que no notificará).
 ### Ver resultados del workflow
 
 En cada ejecución, el workflow sube el contenido de `output/` como artifact (`matches-output`).
+
+---
+
+## Notas sobre `output/`
+
+La carpeta `output/` se mantiene en el repo solo con `output/.gitkeep`.
+Los archivos generados (`matches.json`, `matches.txt`) **no se commitean** y están ignorados en `.gitignore`.
 
 ---
 
