@@ -445,7 +445,7 @@ def main(argv: list[str]) -> int:
 
     parser = argparse.ArgumentParser(description="Download calendar PDF, extract I12 matches, write outputs, optional Telegram notify.")
     parser.add_argument("--pdf-url", default=os.getenv("PDF_URL"), help="Calendar PDF URL (or set PDF_URL env var)")
-    parser.add_argument("--team", default=os.getenv("TEAM_CODE", ""), help="Team code to filter (optional)")
+    parser.add_argument("--team", default=os.getenv("TEAM_CODE", ""), help="(Ignored) Team code filter is disabled; all teams are always included")
     parser.add_argument("--output-dir", default="output", help="Output directory (default: output)")
     parser.add_argument("--no-telegram", action="store_true", help="Disable Telegram notification even if secrets are present")
 
@@ -461,7 +461,7 @@ def main(argv: list[str]) -> int:
         pdf_bytes = download_pdf_bytes(args.pdf_url)
         lines = list(extract_pdf_lines(pdf_bytes))
         team_colors_by_page = extract_team_word_colors_by_page(pdf_bytes)
-        matches = parse_matches(lines, args.team if args.team else None, team_colors_by_page=team_colors_by_page)
+        matches = parse_matches(lines, None, team_colors_by_page=team_colors_by_page)
         matches = filter_next_match_day(matches)
         json_path, txt_path = write_outputs(matches, output_dir)
     except Exception as e:

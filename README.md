@@ -2,7 +2,7 @@
 
 Bot en Python que descarga un PDF de calendario, infiere la **fecha** desde encabezados tipo `31 DE ENERO` y detecta el **color de camiseta** (según el color de fondo de cada celda: `azul` o `blanco`).
 
-Por defecto extrae **todos los equipos** del día de ejecución. Si no hay partidos hoy, devuelve la **próxima fecha disponible**.
+Siempre extrae **todos los equipos** del día de ejecución. Si no hay partidos hoy, devuelve la **próxima fecha disponible**.
 
 Genera:
 - `output/matches.json`
@@ -51,12 +51,6 @@ python bot.py
 
 ```bash
 python bot.py --pdf-url "https://.../calendario.pdf"
-```
-
-### Filtrar por equipo (opcional)
-
-```bash
-python bot.py --team I12
 ```
 
 ### Desactivar Telegram aunque existan secrets
