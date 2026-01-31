@@ -92,6 +92,9 @@ Si defines:
 
 …el bot enviará un mensaje con un resumen de resultados.
 
+Canal de Telegram donde se publican los resultados:
+- https://t.me/OcioCanalFutbol
+
 ---
 
 ## GitHub Actions (ejecución periódica)
