@@ -477,7 +477,7 @@ def send_telegram_notification(token: str, chat_id: str, message: str) -> None:
 
 
 def build_telegram_messages(matches: list[Match]) -> list[str]:
-    header = f"Calendario actualizado\nPartidos encontrados: {len(matches)}"
+    header = "Calendario actualizado"
     max_len = 4096
 
     def sort_key(m: Match):

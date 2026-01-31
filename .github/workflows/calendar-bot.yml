@@ -2,7 +2,8 @@ name: Calendar bot
 
 on:
   schedule:
-    # Every Friday at 07:00 UTC
+    # Every Wednesday and Friday at 07:00 UTC
+    - cron: "0 7 * * 3"
     - cron: "0 7 * * 5"
   workflow_dispatch:
 
