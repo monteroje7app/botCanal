@@ -111,70 +111,6 @@ def extract_pdf_lines(pdf_bytes: bytes) -> Iterator[tuple[int, str]]:
                     yield page_index, cleaned
 
 
-def _color_tuple_to_name(color: object) -> str:
-    # We only expose two values: azul or blanco.
-    if color is None:
-        return "blanco"
-    if isinstance(color, (list, tuple)):
-        if len(color) == 3 and all(isinstance(c, (int, float)) for c in color):
-            r, g, b = (float(color[0]), float(color[1]), float(color[2]))
-            # White backgrounds are often explicit.
-            if r >= 0.98 and g >= 0.98 and b >= 0.98:
-                return "blanco"
-            # Typical blue fill seen in the sample PDF: (0.0, 0.439..., 0.752...)
-            if b >= 0.60 and r <= 0.25 and g <= 0.70:
-                return "azul"
-        if len(color) == 1 and isinstance(color[0], (int, float)):
-            # grayscale 1.0 == white
-            return "blanco" if float(color[0]) >= 0.98 else "azul"
-    return "blanco"
-
-
-def extract_team_word_colors_by_page(pdf_bytes: bytes) -> dict[int, list[tuple[str, str]]]:
-    """Return (team_code, color) for each team-like word in the PDF.
-
-    We look for words that match the team token pattern and find the filled rectangle
-    behind each word. Occurrences are returned in reading order per page.
-    """
-    colors_by_page: dict[int, list[tuple[str, str]]] = {}
-    with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
-        for page_index, page in enumerate(pdf.pages, start=1):
-            words = page.extract_words() or []
-            hits = [w for w in words if _TEAM_TOKEN_RE.fullmatch((w.get("text") or "").strip() or "")]
-            if not hits:
-                continue
-
-            # Sort to match typical text extraction order.
-            hits.sort(key=lambda w: (float(w.get("top", 0.0)), float(w.get("x0", 0.0))))
-
-            page_items: list[tuple[str, str]] = []
-            rects = page.rects or []
-            for w in hits:
-                team_code = (w.get("text") or "").strip()
-                x0, x1 = float(w["x0"]), float(w["x1"])
-                top, bottom = float(w["top"]), float(w["bottom"])
-                cx, cy = (x0 + x1) / 2.0, (top + bottom) / 2.0
-
-                best_rect = None
-                best_area = None
-                for r in rects:
-                    fill = r.get("non_stroking_color")
-                    if fill is None:
-                        continue
-                    rx0, rx1 = float(r["x0"]), float(r["x1"])
-                    rtop, rbottom = float(r["top"]), float(r["bottom"])
-                    if rx0 <= cx <= rx1 and rtop <= cy <= rbottom:
-                        area = max(0.0, (rx1 - rx0)) * max(0.0, (rbottom - rtop))
-                        if best_area is None or area < best_area:
-                            best_area = area
-                            best_rect = r
-
-                color = _color_tuple_to_name(best_rect.get("non_stroking_color") if best_rect else None)
-                page_items.append((team_code, color))
-
-            colors_by_page[page_index] = page_items
-
-    return colors_by_page
 
 
 def _extract_team_tokens(line: str) -> list[str]:
@@ -293,7 +229,6 @@ def _split_teams(line_wo_datetime: str) -> tuple[Optional[str], Optional[str]]:
 def parse_matches(
     lines: Iterable[tuple[int, str]],
     team_code: Optional[str],
-    team_colors_by_page: Optional[dict[int, list[tuple[str, str]]]] = None,
 ) -> list[Match]:
     team_code_norm = team_code.strip() if team_code else ""
 
@@ -310,7 +245,7 @@ def parse_matches(
     current_context_date: Optional[str] = None
     current_campo_names: list[str] = []
     in_liga_interna = False
-    color_index_by_page: dict[int, int] = {}
+    # Color is derived from LOCAL/VISITANTE column position.
 
     for page, line in lines_list:
         heading_date = _parse_spanish_date_heading(line, default_year)
@@ -351,17 +286,8 @@ def parse_matches(
             pair_index = idx_token // 2
             campo = _get_campo_for_index(current_campo_names, pair_index) if current_campo_names else None
 
-            jersey_color = "blanco"
-            if team_colors_by_page and page in team_colors_by_page:
-                idx = color_index_by_page.get(page, 0)
-                page_items = team_colors_by_page.get(page) or []
-                # advance until matching token, if possible
-                while idx < len(page_items) and page_items[idx][0] != token:
-                    idx += 1
-                if idx < len(page_items) and page_items[idx][0] == token:
-                    jersey_color = page_items[idx][1]
-                    idx += 1
-                color_index_by_page[page] = idx
+            # In each pair, LOCAL is first (blanco) and VISITANTE is second (azul).
+            jersey_color = "blanco" if (idx_token % 2 == 0) else "azul"
 
             match = Match(
                 team_code=token,
@@ -481,34 +407,36 @@ def build_telegram_messages(matches: list[Match]) -> list[str]:
     max_len = 4096
 
     def sort_key(m: Match):
-        return (m.campo or "", m.date or "", m.time or "", m.team_code or "")
+        return (m.date or "", m.time or "", m.team_code or "")
 
     matches_sorted = sorted(matches, key=sort_key)
 
-    # Group by campo
+    # Group by hour
     grouped: dict[str, list[Match]] = {}
     for m in matches_sorted:
-        key = m.campo or "Campo"
+        key = m.time or "(sin hora)"
         grouped.setdefault(key, []).append(m)
 
     messages: list[str] = []
-    for campo_name, items in grouped.items():
-        lines = [header, f"Campo: {campo_name}"]
+    common_date = matches_sorted[0].date if matches_sorted else None
+    date_line = f"Fecha: {common_date}" if common_date else "Fecha: (sin fecha)"
+
+    for hour_key, items in grouped.items():
+        lines = [header, date_line, f"Hora: {hour_key}"]
         for m in items:
-            dt = " ".join([p for p in [m.date or "", m.time or ""] if p]).strip() or "(sin fecha/hora)"
-            lines.append(f"- {dt}: {m.team_code} {m.jersey_color}")
+            lines.append(f"- {m.team_code} {m.jersey_color}")
         msg = "\n".join(lines)
         if len(msg) <= max_len:
             messages.append(msg)
             continue
 
         # If still too long, split the list into chunks
-        chunk: list[str] = [header, f"Campo: {campo_name}"]
-        for line in lines[2:]:
+        chunk: list[str] = [header, date_line, f"Hora: {hour_key}"]
+        for line in lines[3:]:
             candidate = "\n".join(chunk + [line])
             if len(candidate) > max_len:
                 messages.append("\n".join(chunk))
-                chunk = [header, f"Campo: {campo_name}", line]
+                chunk = [header, date_line, f"Hora: {hour_key}", line]
             else:
                 chunk.append(line)
         if chunk:
@@ -537,8 +465,7 @@ def main(argv: list[str]) -> int:
     try:
         pdf_bytes = download_pdf_bytes(args.pdf_url)
         lines = list(extract_pdf_lines(pdf_bytes))
-        team_colors_by_page = extract_team_word_colors_by_page(pdf_bytes)
-        matches = parse_matches(lines, None, team_colors_by_page=team_colors_by_page)
+        matches = parse_matches(lines, None)
         matches = filter_next_match_day(matches)
         json_path, txt_path = write_outputs(matches, output_dir)
     except Exception as e:
