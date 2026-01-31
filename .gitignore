@@ -144,6 +144,10 @@ ENV/
 env.bak/
 venv.bak/
 
+# Bot outputs (keep folder via output/.gitkeep)
+output/*
+!output/.gitkeep
+
 # Spyder project settings
 .spyderproject
 .spyproject

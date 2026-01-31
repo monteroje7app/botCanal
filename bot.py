@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import unicodedata
+from io import BytesIO
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,7 @@ class Match:
 _DATE_RE = re.compile(r"\b(?P<d>\d{1,2})[\/\.-](?P<m>\d{1,2})(?:[\/\.-](?P<y>\d{2,4}))?\b")
 _TIME_RE = re.compile(r"\b(?P<h>\d{1,2})[:\.](?P<min>\d{2})\b")
 _SCORE_RE = re.compile(r"\b\d{1,2}\s*[-:]\s*\d{1,2}\b")
+_TEAM_TOKEN_RE = re.compile(r"\b[A-Z]{1,3}\d{1,3}\b")
 
 _SPANISH_DATE_HEADING_RE = re.compile(r"^\s*(?P<d>\d{1,2})\s+DE\s+(?P<mon>[A-ZÁÉÍÓÚÜÑ]+)\s*$", re.IGNORECASE)
 
@@ -84,23 +86,20 @@ def _parse_spanish_date_heading(line: str, default_year: Optional[int]) -> Optio
 
 
 def download_pdf(pdf_url: str, dest_path: Path, timeout_s: int = 45) -> None:
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    raise NotImplementedError("download_pdf is no longer used; use download_pdf_bytes instead")
 
+
+def download_pdf_bytes(pdf_url: str, timeout_s: int = 45) -> bytes:
     headers = {
         "User-Agent": "botCanal/1.0 (+https://github.com/)"
     }
     with requests.get(pdf_url, stream=True, timeout=timeout_s, headers=headers) as r:
         r.raise_for_status()
-        tmp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
-        with tmp_path.open("wb") as f:
-            for chunk in r.iter_content(chunk_size=1024 * 64):
-                if chunk:
-                    f.write(chunk)
-        tmp_path.replace(dest_path)
+        return r.content
 
 
-def extract_pdf_lines(pdf_path: Path) -> Iterator[tuple[int, str]]:
-    with pdfplumber.open(str(pdf_path)) as pdf:
+def extract_pdf_lines(pdf_bytes: bytes) -> Iterator[tuple[int, str]]:
+    with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
         for page_index, page in enumerate(pdf.pages, start=1):
             text = page.extract_text() or ""
             for line in text.splitlines():
@@ -128,30 +127,27 @@ def _color_tuple_to_name(color: object) -> str:
     return "blanco"
 
 
-def extract_team_cell_colors_by_page(pdf_path: Path, team_code: str) -> dict[int, list[str]]:
-    """Return colors for each occurrence of team_code in the PDF.
+def extract_team_word_colors_by_page(pdf_bytes: bytes) -> dict[int, list[tuple[str, str]]]:
+    """Return (team_code, color) for each team-like word in the PDF.
 
-    We look for `team_code` as an extracted word and find the filled rectangle behind it.
-    Occurrences are returned in reading order (top-to-bottom, left-to-right) per page.
+    We look for words that match the team token pattern and find the filled rectangle
+    behind each word. Occurrences are returned in reading order per page.
     """
-    team_code_norm = team_code.strip()
-    if not team_code_norm:
-        return {}
-
     colors_by_page: dict[int, list[str]] = {}
-    with pdfplumber.open(str(pdf_path)) as pdf:
+    with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
         for page_index, page in enumerate(pdf.pages, start=1):
             words = page.extract_words() or []
-            hits = [w for w in words if (w.get("text") or "").strip() == team_code_norm]
+            hits = [w for w in words if _TEAM_TOKEN_RE.fullmatch((w.get("text") or "").strip() or "")]
             if not hits:
                 continue
 
             # Sort to match typical text extraction order.
             hits.sort(key=lambda w: (float(w.get("top", 0.0)), float(w.get("x0", 0.0))))
 
-            page_colors: list[str] = []
+            page_items: list[tuple[str, str]] = []
             rects = page.rects or []
             for w in hits:
+                team_code = (w.get("text") or "").strip()
                 x0, x1 = float(w["x0"]), float(w["x1"])
                 top, bottom = float(w["top"]), float(w["bottom"])
                 cx, cy = (x0 + x1) / 2.0, (top + bottom) / 2.0
@@ -170,11 +166,16 @@ def extract_team_cell_colors_by_page(pdf_path: Path, team_code: str) -> dict[int
                             best_area = area
                             best_rect = r
 
-                page_colors.append(_color_tuple_to_name(best_rect.get("non_stroking_color") if best_rect else None))
+                color = _color_tuple_to_name(best_rect.get("non_stroking_color") if best_rect else None)
+                page_items.append((team_code, color))
 
-            colors_by_page[page_index] = page_colors
+            colors_by_page[page_index] = page_items
 
     return colors_by_page
+
+
+def _extract_team_tokens(line: str) -> list[str]:
+    return _TEAM_TOKEN_RE.findall(line)
 
 
 def _strip_datetime_prefix(text: str) -> str:
@@ -265,12 +266,10 @@ def _split_teams(line_wo_datetime: str) -> tuple[Optional[str], Optional[str]]:
 
 def parse_matches(
     lines: Iterable[tuple[int, str]],
-    team_code: str,
-    team_colors_by_page: Optional[dict[int, list[str]]] = None,
+    team_code: Optional[str],
+    team_colors_by_page: Optional[dict[int, list[tuple[str, str]]]] = None,
 ) -> list[Match]:
-    team_code_norm = team_code.strip()
-    if not team_code_norm:
-        raise ValueError("team_code must not be empty")
+    team_code_norm = team_code.strip() if team_code else ""
 
     # Many calendar rows only contain the time + teams; the date is often a page heading
     # like "31 DE ENERO". We infer a default year from any explicit dd/mm/yy we find.
@@ -290,41 +289,50 @@ def parse_matches(
         if heading_date:
             current_context_date = heading_date
 
-        if team_code_norm.lower() not in line.lower():
-            continue
-
         date_iso, time_hhmm = _parse_date_time(line, default_year=default_year)
         if date_iso is None:
             date_iso = current_context_date
-        jersey_color = "blanco"
-        if team_colors_by_page and page in team_colors_by_page:
-            idx = color_index_by_page.get(page, 0)
-            page_colors = team_colors_by_page.get(page) or []
-            if idx < len(page_colors):
-                jersey_color = page_colors[idx]
-            color_index_by_page[page] = idx + 1
-
-        match = Match(
-            team_code=team_code_norm,
-            date=date_iso,
-            time=time_hhmm,
-            jersey_color=jersey_color,
-            raw_line=line,
-            page=page,
-        )
-
-        key = (
-            match.team_code,
-            match.date,
-            match.time,
-            match.jersey_color,
-            match.raw_line,
-            match.page,
-        )
-        if key in seen:
+        team_tokens = _extract_team_tokens(line)
+        if not team_tokens:
             continue
-        seen.add(key)
-        matches.append(match)
+
+        for token in team_tokens:
+            if team_code_norm and token.lower() != team_code_norm.lower():
+                continue
+
+            jersey_color = "blanco"
+            if team_colors_by_page and page in team_colors_by_page:
+                idx = color_index_by_page.get(page, 0)
+                page_items = team_colors_by_page.get(page) or []
+                # advance until matching token, if possible
+                while idx < len(page_items) and page_items[idx][0] != token:
+                    idx += 1
+                if idx < len(page_items) and page_items[idx][0] == token:
+                    jersey_color = page_items[idx][1]
+                    idx += 1
+                color_index_by_page[page] = idx
+
+            match = Match(
+                team_code=token,
+                date=date_iso,
+                time=time_hhmm,
+                jersey_color=jersey_color,
+                raw_line=line,
+                page=page,
+            )
+
+            key = (
+                match.team_code,
+                match.date,
+                match.time,
+                match.jersey_color,
+                match.raw_line,
+                match.page,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append(match)
 
     return matches
 
@@ -335,32 +343,68 @@ def write_outputs(matches: list[Match], output_dir: Path) -> tuple[Path, Path]:
     json_path = output_dir / "matches.json"
     txt_path = output_dir / "matches.txt"
 
+    sorted_matches = sorted(
+        matches,
+        key=lambda m: (
+            (m.team_code or "").upper(),
+            m.date or "",
+            m.time or "",
+        ),
+    )
+
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "count": len(matches),
+        "count": len(sorted_matches),
         "matches": [
             {
+                "team": m.team_code,
                 "date": m.date,
                 "time": m.time,
                 "color": m.jersey_color,
             }
-            for m in matches
+            for m in sorted_matches
         ],
     }
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     lines: list[str] = []
-    lines.append(f"Team: {matches[0].team_code if matches else ''}".strip())
+    lines.append("Teams: all" if not matches else "Teams: all")
     lines.append(f"Generated (UTC): {payload['generated_at']}")
-    lines.append(f"Matches: {len(matches)}")
+    lines.append(f"Matches: {len(sorted_matches)}")
     lines.append("")
 
-    for m in matches:
+    for m in sorted_matches:
         dt = " ".join([p for p in [m.date or "", m.time or ""] if p]).strip() or "(no date/time)"
-        lines.append(f"- {dt} {m.jersey_color}")
+        lines.append(f"- {dt} {m.team_code} {m.jersey_color}")
 
     txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return json_path, txt_path
+
+
+def filter_next_match_day(matches: list[Match]) -> list[Match]:
+    today = datetime.now(timezone.utc).date()
+    today_dates = []
+    future_dates = []
+    for m in matches:
+        if not m.date:
+            continue
+        try:
+            d = datetime.fromisoformat(m.date).date()
+        except ValueError:
+            continue
+        if d == today:
+            today_dates.append(d)
+        elif d > today:
+            future_dates.append(d)
+
+    if today_dates:
+        return [m for m in matches if m.date == today.isoformat()]
+
+    if not future_dates:
+        return []
+
+    next_date = min(future_dates)
+    return [m for m in matches if m.date == next_date]
 
 
 def send_telegram_notification(token: str, chat_id: str, message: str) -> None:
@@ -378,7 +422,7 @@ def send_telegram_notification(token: str, chat_id: str, message: str) -> None:
 
 
 def build_telegram_message(matches: list[Match], team_code: str) -> str:
-    header = f"Calendario actualizado: {team_code}\nPartidos encontrados: {len(matches)}"
+    header = f"Calendario actualizado\nPartidos encontrados: {len(matches)}"
 
     # Show up to 5 upcoming-ish matches (those with a parsed date first)
     def sort_key(m: Match):
@@ -390,7 +434,7 @@ def build_telegram_message(matches: list[Match], team_code: str) -> str:
     body_lines: list[str] = []
     for m in sample:
         dt = " ".join([p for p in [m.date or "", m.time or ""] if p]).strip() or "(sin fecha/hora)"
-        body_lines.append(f"- {dt}: {m.jersey_color}")
+        body_lines.append(f"- {dt}: {m.team_code} {m.jersey_color}")
 
     body = "\n".join(body_lines)
     return header + ("\n\n" + body if body else "")
@@ -401,7 +445,7 @@ def main(argv: list[str]) -> int:
 
     parser = argparse.ArgumentParser(description="Download calendar PDF, extract I12 matches, write outputs, optional Telegram notify.")
     parser.add_argument("--pdf-url", default=os.getenv("PDF_URL"), help="Calendar PDF URL (or set PDF_URL env var)")
-    parser.add_argument("--team", default=os.getenv("TEAM_CODE", "I12"), help="Team code to filter (default: I12)")
+    parser.add_argument("--team", default=os.getenv("TEAM_CODE", ""), help="Team code to filter (optional)")
     parser.add_argument("--output-dir", default="output", help="Output directory (default: output)")
     parser.add_argument("--no-telegram", action="store_true", help="Disable Telegram notification even if secrets are present")
 
@@ -412,13 +456,13 @@ def main(argv: list[str]) -> int:
         return 2
 
     output_dir = Path(args.output_dir)
-    pdf_path = output_dir / "calendar.pdf"
 
     try:
-        download_pdf(args.pdf_url, pdf_path)
-        lines = list(extract_pdf_lines(pdf_path))
-        team_colors_by_page = extract_team_cell_colors_by_page(pdf_path, args.team)
-        matches = parse_matches(lines, args.team, team_colors_by_page=team_colors_by_page)
+        pdf_bytes = download_pdf_bytes(args.pdf_url)
+        lines = list(extract_pdf_lines(pdf_bytes))
+        team_colors_by_page = extract_team_word_colors_by_page(pdf_bytes)
+        matches = parse_matches(lines, args.team if args.team else None, team_colors_by_page=team_colors_by_page)
+        matches = filter_next_match_day(matches)
         json_path, txt_path = write_outputs(matches, output_dir)
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
