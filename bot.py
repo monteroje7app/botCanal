@@ -21,10 +21,7 @@ class Match:
     team_code: str
     date: Optional[str]
     time: Optional[str]
-    home_team: Optional[str]
-    away_team: Optional[str]
-    opponent: Optional[str]
-    is_home: Optional[bool]
+    jersey_color: str  # "azul" | "blanco"
     raw_line: str
     page: int
 
@@ -110,6 +107,74 @@ def extract_pdf_lines(pdf_path: Path) -> Iterator[tuple[int, str]]:
                 cleaned = " ".join(line.split())
                 if cleaned:
                     yield page_index, cleaned
+
+
+def _color_tuple_to_name(color: object) -> str:
+    # We only expose two values: azul or blanco.
+    if color is None:
+        return "blanco"
+    if isinstance(color, (list, tuple)):
+        if len(color) == 3 and all(isinstance(c, (int, float)) for c in color):
+            r, g, b = (float(color[0]), float(color[1]), float(color[2]))
+            # White backgrounds are often explicit.
+            if r >= 0.98 and g >= 0.98 and b >= 0.98:
+                return "blanco"
+            # Typical blue fill seen in the sample PDF: (0.0, 0.439..., 0.752...)
+            if b >= 0.60 and r <= 0.25 and g <= 0.70:
+                return "azul"
+        if len(color) == 1 and isinstance(color[0], (int, float)):
+            # grayscale 1.0 == white
+            return "blanco" if float(color[0]) >= 0.98 else "azul"
+    return "blanco"
+
+
+def extract_team_cell_colors_by_page(pdf_path: Path, team_code: str) -> dict[int, list[str]]:
+    """Return colors for each occurrence of team_code in the PDF.
+
+    We look for `team_code` as an extracted word and find the filled rectangle behind it.
+    Occurrences are returned in reading order (top-to-bottom, left-to-right) per page.
+    """
+    team_code_norm = team_code.strip()
+    if not team_code_norm:
+        return {}
+
+    colors_by_page: dict[int, list[str]] = {}
+    with pdfplumber.open(str(pdf_path)) as pdf:
+        for page_index, page in enumerate(pdf.pages, start=1):
+            words = page.extract_words() or []
+            hits = [w for w in words if (w.get("text") or "").strip() == team_code_norm]
+            if not hits:
+                continue
+
+            # Sort to match typical text extraction order.
+            hits.sort(key=lambda w: (float(w.get("top", 0.0)), float(w.get("x0", 0.0))))
+
+            page_colors: list[str] = []
+            rects = page.rects or []
+            for w in hits:
+                x0, x1 = float(w["x0"]), float(w["x1"])
+                top, bottom = float(w["top"]), float(w["bottom"])
+                cx, cy = (x0 + x1) / 2.0, (top + bottom) / 2.0
+
+                best_rect = None
+                best_area = None
+                for r in rects:
+                    fill = r.get("non_stroking_color")
+                    if fill is None:
+                        continue
+                    rx0, rx1 = float(r["x0"]), float(r["x1"])
+                    rtop, rbottom = float(r["top"]), float(r["bottom"])
+                    if rx0 <= cx <= rx1 and rtop <= cy <= rbottom:
+                        area = max(0.0, (rx1 - rx0)) * max(0.0, (rbottom - rtop))
+                        if best_area is None or area < best_area:
+                            best_area = area
+                            best_rect = r
+
+                page_colors.append(_color_tuple_to_name(best_rect.get("non_stroking_color") if best_rect else None))
+
+            colors_by_page[page_index] = page_colors
+
+    return colors_by_page
 
 
 def _strip_datetime_prefix(text: str) -> str:
@@ -198,7 +263,11 @@ def _split_teams(line_wo_datetime: str) -> tuple[Optional[str], Optional[str]]:
     return None, None
 
 
-def parse_matches(lines: Iterable[tuple[int, str]], team_code: str) -> list[Match]:
+def parse_matches(
+    lines: Iterable[tuple[int, str]],
+    team_code: str,
+    team_colors_by_page: Optional[dict[int, list[str]]] = None,
+) -> list[Match]:
     team_code_norm = team_code.strip()
     if not team_code_norm:
         raise ValueError("team_code must not be empty")
@@ -214,6 +283,7 @@ def parse_matches(lines: Iterable[tuple[int, str]], team_code: str) -> list[Matc
     seen: set[tuple] = set()
 
     current_context_date: Optional[str] = None
+    color_index_by_page: dict[int, int] = {}
 
     for page, line in lines_list:
         heading_date = _parse_spanish_date_heading(line, default_year)
@@ -226,28 +296,19 @@ def parse_matches(lines: Iterable[tuple[int, str]], team_code: str) -> list[Matc
         date_iso, time_hhmm = _parse_date_time(line, default_year=default_year)
         if date_iso is None:
             date_iso = current_context_date
-        line_wo_datetime = _strip_datetime_prefix(line)
-        home, away = _split_teams(line_wo_datetime)
-
-        opponent: Optional[str] = None
-        is_home: Optional[bool] = None
-
-        if home and away:
-            if team_code_norm.lower() in home.lower():
-                opponent = away
-                is_home = True
-            elif team_code_norm.lower() in away.lower():
-                opponent = home
-                is_home = False
+        jersey_color = "blanco"
+        if team_colors_by_page and page in team_colors_by_page:
+            idx = color_index_by_page.get(page, 0)
+            page_colors = team_colors_by_page.get(page) or []
+            if idx < len(page_colors):
+                jersey_color = page_colors[idx]
+            color_index_by_page[page] = idx + 1
 
         match = Match(
             team_code=team_code_norm,
             date=date_iso,
             time=time_hhmm,
-            home_team=home,
-            away_team=away,
-            opponent=opponent,
-            is_home=is_home,
+            jersey_color=jersey_color,
             raw_line=line,
             page=page,
         )
@@ -256,8 +317,7 @@ def parse_matches(lines: Iterable[tuple[int, str]], team_code: str) -> list[Matc
             match.team_code,
             match.date,
             match.time,
-            match.home_team,
-            match.away_team,
+            match.jersey_color,
             match.raw_line,
             match.page,
         )
@@ -278,7 +338,14 @@ def write_outputs(matches: list[Match], output_dir: Path) -> tuple[Path, Path]:
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "count": len(matches),
-        "matches": [asdict(m) for m in matches],
+        "matches": [
+            {
+                "date": m.date,
+                "time": m.time,
+                "color": m.jersey_color,
+            }
+            for m in matches
+        ],
     }
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -290,14 +357,7 @@ def write_outputs(matches: list[Match], output_dir: Path) -> tuple[Path, Path]:
 
     for m in matches:
         dt = " ".join([p for p in [m.date or "", m.time or ""] if p]).strip() or "(no date/time)"
-        ha = "HOME" if m.is_home is True else "AWAY" if m.is_home is False else ""
-        teams = ""
-        if m.home_team and m.away_team:
-            teams = f"{m.home_team} vs {m.away_team}"
-        else:
-            teams = m.raw_line
-        extra = f" [{ha}]" if ha else ""
-        lines.append(f"- {dt}{extra} :: {teams}")
+        lines.append(f"- {dt} {m.jersey_color}")
 
     txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return json_path, txt_path
@@ -330,10 +390,7 @@ def build_telegram_message(matches: list[Match], team_code: str) -> str:
     body_lines: list[str] = []
     for m in sample:
         dt = " ".join([p for p in [m.date or "", m.time or ""] if p]).strip() or "(sin fecha/hora)"
-        opp = m.opponent or "(rival desconocido)"
-        ha = "Local" if m.is_home is True else "Visitante" if m.is_home is False else ""
-        suffix = f" - {ha}" if ha else ""
-        body_lines.append(f"- {dt}: vs {opp}{suffix}")
+        body_lines.append(f"- {dt}: {m.jersey_color}")
 
     body = "\n".join(body_lines)
     return header + ("\n\n" + body if body else "")
@@ -360,7 +417,8 @@ def main(argv: list[str]) -> int:
     try:
         download_pdf(args.pdf_url, pdf_path)
         lines = list(extract_pdf_lines(pdf_path))
-        matches = parse_matches(lines, args.team)
+        team_colors_by_page = extract_team_cell_colors_by_page(pdf_path, args.team)
+        matches = parse_matches(lines, args.team, team_colors_by_page=team_colors_by_page)
         json_path, txt_path = write_outputs(matches, output_dir)
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
