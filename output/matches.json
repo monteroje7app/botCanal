@@ -1,0 +1,116 @@
+{
+  "generated_at": "2026-01-31T12:25:05.807041+00:00",
+  "count": 10,
+  "matches": [
+    {
+      "team_code": "I12",
+      "date": "2026-01-31",
+      "time": "14:00",
+      "home_team": null,
+      "away_team": null,
+      "opponent": null,
+      "is_home": null,
+      "raw_line": "14:00-15:00 I14 I12 I133 I2 A8 A1 PB9 PB11 PB16 PB4",
+      "page": 1
+    },
+    {
+      "team_code": "I12",
+      "date": "2026-02-07",
+      "time": "14:00",
+      "home_team": null,
+      "away_team": null,
+      "opponent": null,
+      "is_home": null,
+      "raw_line": "14:00-15:00 I13 I3 I8 I12 I6 I4 PB2 PB16 PB5 PB4",
+      "page": 1
+    },
+    {
+      "team_code": "I12",
+      "date": "2026-02-21",
+      "time": "09:00",
+      "home_team": null,
+      "away_team": null,
+      "opponent": null,
+      "is_home": null,
+      "raw_line": "09:00-10:00 I6 I12 I4 I3 I14 I8 J16 J5 J6 J8",
+      "page": 3
+    },
+    {
+      "team_code": "I12",
+      "date": "2026-02-28",
+      "time": "10:00",
+      "home_team": null,
+      "away_team": null,
+      "opponent": null,
+      "is_home": null,
+      "raw_line": "10:00-11:00 I14 I13 I15 I1 I4 I12",
+      "page": 4
+    },
+    {
+      "team_code": "I12",
+      "date": "2026-03-14",
+      "time": "11:00",
+      "home_team": null,
+      "away_team": null,
+      "opponent": null,
+      "is_home": null,
+      "raw_line": "11:00-12:00 I3 I12 A5 A8 I11 I15",
+      "page": 5
+    },
+    {
+      "team_code": "I12",
+      "date": "2026-03-21",
+      "time": "13:00",
+      "home_team": null,
+      "away_team": null,
+      "opponent": null,
+      "is_home": null,
+      "raw_line": "13:00-14:00 I14 I4 I2 I1 I9 I12 E MJ18 E MJ17 PB9 PB2",
+      "page": 5
+    },
+    {
+      "team_code": "I12",
+      "date": "2026-03-28",
+      "time": "12:00",
+      "home_team": null,
+      "away_team": null,
+      "opponent": null,
+      "is_home": null,
+      "raw_line": "12:00-13:00 B8 B4 C5 C11 I13 I12 ESCUELA HOCKEY TECNIFICACIÓN FEMENINA",
+      "page": 6
+    },
+    {
+      "team_code": "I12",
+      "date": "2026-04-11",
+      "time": "11:00",
+      "home_team": null,
+      "away_team": null,
+      "opponent": null,
+      "is_home": null,
+      "raw_line": "11:00-12:00 B14 B9 A4 A12 I12 I14",
+      "page": 7
+    },
+    {
+      "team_code": "I12",
+      "date": "2026-04-25",
+      "time": "11:00",
+      "home_team": null,
+      "away_team": null,
+      "opponent": null,
+      "is_home": null,
+      "raw_line": "11:00-12:00 I133 I1 A9 A12 I12 I8",
+      "page": 8
+    },
+    {
+      "team_code": "I12",
+      "date": "2026-05-09",
+      "time": "10:00",
+      "home_team": null,
+      "away_team": null,
+      "opponent": null,
+      "is_home": null,
+      "raw_line": "10:00-11:00 C11 C1 A16 A6 I12 I6",
+      "page": 9
+    }
+  ]
+}

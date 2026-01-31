@@ -1,0 +1,44 @@
+name: Calendar bot
+
+on:
+  schedule:
+    # Every Friday at 07:00 UTC
+    - cron: "0 7 * * 5"
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run bot
+        env:
+          # Prefer a repository variable; otherwise use a secret.
+          PDF_URL: ${{ vars.PDF_URL != '' && vars.PDF_URL || secrets.PDF_URL }}
+          TEAM_CODE: I12
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python bot.py
+
+      - name: Upload output artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matches-output
+          path: output/
+          if-no-files-found: warn
