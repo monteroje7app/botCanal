@@ -23,6 +23,7 @@ class Match:
     date: Optional[str]
     time: Optional[str]
     jersey_color: str  # "azul" | "blanco"
+    campo: Optional[str]
     raw_line: str
     page: int
 
@@ -31,6 +32,8 @@ _DATE_RE = re.compile(r"\b(?P<d>\d{1,2})[\/\.-](?P<m>\d{1,2})(?:[\/\.-](?P<y>\d{
 _TIME_RE = re.compile(r"\b(?P<h>\d{1,2})[:\.](?P<min>\d{2})\b")
 _SCORE_RE = re.compile(r"\b\d{1,2}\s*[-:]\s*\d{1,2}\b")
 _TEAM_TOKEN_RE = re.compile(r"\b[A-Z]{1,3}\d{1,3}\b")
+_TIME_RANGE_RE = re.compile(r"^(?P<start>\d{1,2}:\d{2})\s*-\s*(?P<end>\d{1,2}:\d{2})")
+_CAMPO_HEADER_RE = re.compile(r"CAMPO\s+\d+\s*(?:\(([^)]+)\))?", re.IGNORECASE)
 
 _SPANISH_DATE_HEADING_RE = re.compile(r"^\s*(?P<d>\d{1,2})\s+DE\s+(?P<mon>[A-ZÁÉÍÓÚÜÑ]+)\s*$", re.IGNORECASE)
 
@@ -133,7 +136,7 @@ def extract_team_word_colors_by_page(pdf_bytes: bytes) -> dict[int, list[tuple[s
     We look for words that match the team token pattern and find the filled rectangle
     behind each word. Occurrences are returned in reading order per page.
     """
-    colors_by_page: dict[int, list[str]] = {}
+    colors_by_page: dict[int, list[tuple[str, str]]] = {}
     with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
         for page_index, page in enumerate(pdf.pages, start=1):
             words = page.extract_words() or []
@@ -176,6 +179,29 @@ def extract_team_word_colors_by_page(pdf_bytes: bytes) -> dict[int, list[tuple[s
 
 def _extract_team_tokens(line: str) -> list[str]:
     return _TEAM_TOKEN_RE.findall(line)
+
+
+def _parse_campo_names(line: str) -> Optional[list[str]]:
+    if "CAMPO" not in line.upper():
+        return None
+    matches = _CAMPO_HEADER_RE.findall(line)
+    if not matches:
+        return None
+
+    names: list[str] = []
+    for idx, label in enumerate(matches, start=1):
+        label_clean = (label or "").strip()
+        if label_clean:
+            names.append(f"Campo {idx} ({label_clean})")
+        else:
+            names.append(f"Campo {idx}")
+    return names
+
+
+def _get_campo_for_index(campo_names: list[str], pair_index: int) -> str:
+    if pair_index < len(campo_names):
+        return campo_names[pair_index]
+    return f"Campo {pair_index + 1}"
 
 
 def _strip_datetime_prefix(text: str) -> str:
@@ -282,12 +308,34 @@ def parse_matches(
     seen: set[tuple] = set()
 
     current_context_date: Optional[str] = None
+    current_campo_names: list[str] = []
+    in_liga_interna = False
     color_index_by_page: dict[int, int] = {}
 
     for page, line in lines_list:
         heading_date = _parse_spanish_date_heading(line, default_year)
         if heading_date:
             current_context_date = heading_date
+            in_liga_interna = False
+
+        upper_line = line.upper()
+        if "LIGA INTERNA" in upper_line:
+            in_liga_interna = True
+            continue
+        if upper_line.startswith("FEDERADOS"):
+            in_liga_interna = False
+            continue
+
+        if not in_liga_interna:
+            continue
+
+        campo_names = _parse_campo_names(line)
+        if campo_names:
+            current_campo_names = campo_names
+            continue
+
+        if not _TIME_RANGE_RE.search(line):
+            continue
 
         date_iso, time_hhmm = _parse_date_time(line, default_year=default_year)
         if date_iso is None:
@@ -296,9 +344,12 @@ def parse_matches(
         if not team_tokens:
             continue
 
-        for token in team_tokens:
+        for idx_token, token in enumerate(team_tokens):
             if team_code_norm and token.lower() != team_code_norm.lower():
                 continue
+
+            pair_index = idx_token // 2
+            campo = _get_campo_for_index(current_campo_names, pair_index) if current_campo_names else None
 
             jersey_color = "blanco"
             if team_colors_by_page and page in team_colors_by_page:
@@ -317,6 +368,7 @@ def parse_matches(
                 date=date_iso,
                 time=time_hhmm,
                 jersey_color=jersey_color,
+                campo=campo,
                 raw_line=line,
                 page=page,
             )
@@ -326,6 +378,7 @@ def parse_matches(
                 match.date,
                 match.time,
                 match.jersey_color,
+                match.campo,
                 match.raw_line,
                 match.page,
             )
@@ -361,6 +414,7 @@ def write_outputs(matches: list[Match], output_dir: Path) -> tuple[Path, Path]:
                 "date": m.date,
                 "time": m.time,
                 "color": m.jersey_color,
+                "campo": m.campo,
             }
             for m in sorted_matches
         ],
@@ -375,7 +429,8 @@ def write_outputs(matches: list[Match], output_dir: Path) -> tuple[Path, Path]:
 
     for m in sorted_matches:
         dt = " ".join([p for p in [m.date or "", m.time or ""] if p]).strip() or "(no date/time)"
-        lines.append(f"- {dt} {m.team_code} {m.jersey_color}")
+        campo_text = f" {m.campo}" if m.campo else ""
+        lines.append(f"- {dt} {m.team_code} {m.jersey_color}{campo_text}")
 
     txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return json_path, txt_path
@@ -421,23 +476,45 @@ def send_telegram_notification(token: str, chat_id: str, message: str) -> None:
     r.raise_for_status()
 
 
-def build_telegram_message(matches: list[Match], team_code: str) -> str:
+def build_telegram_messages(matches: list[Match]) -> list[str]:
     header = f"Calendario actualizado\nPartidos encontrados: {len(matches)}"
+    max_len = 4096
 
-    # Show up to 5 upcoming-ish matches (those with a parsed date first)
     def sort_key(m: Match):
-        if m.date:
-            return (0, m.date, m.time or "00:00")
-        return (1, "9999-12-31", m.time or "00:00")
+        return (m.campo or "", m.date or "", m.time or "", m.team_code or "")
 
-    sample = sorted(matches, key=sort_key)[:5]
-    body_lines: list[str] = []
-    for m in sample:
-        dt = " ".join([p for p in [m.date or "", m.time or ""] if p]).strip() or "(sin fecha/hora)"
-        body_lines.append(f"- {dt}: {m.team_code} {m.jersey_color}")
+    matches_sorted = sorted(matches, key=sort_key)
 
-    body = "\n".join(body_lines)
-    return header + ("\n\n" + body if body else "")
+    # Group by campo
+    grouped: dict[str, list[Match]] = {}
+    for m in matches_sorted:
+        key = m.campo or "Campo"
+        grouped.setdefault(key, []).append(m)
+
+    messages: list[str] = []
+    for campo_name, items in grouped.items():
+        lines = [header, f"Campo: {campo_name}"]
+        for m in items:
+            dt = " ".join([p for p in [m.date or "", m.time or ""] if p]).strip() or "(sin fecha/hora)"
+            lines.append(f"- {dt}: {m.team_code} {m.jersey_color}")
+        msg = "\n".join(lines)
+        if len(msg) <= max_len:
+            messages.append(msg)
+            continue
+
+        # If still too long, split the list into chunks
+        chunk: list[str] = [header, f"Campo: {campo_name}"]
+        for line in lines[2:]:
+            candidate = "\n".join(chunk + [line])
+            if len(candidate) > max_len:
+                messages.append("\n".join(chunk))
+                chunk = [header, f"Campo: {campo_name}", line]
+            else:
+                chunk.append(line)
+        if chunk:
+            messages.append("\n".join(chunk))
+
+    return messages
 
 
 def main(argv: list[str]) -> int:
@@ -478,8 +555,9 @@ def main(argv: list[str]) -> int:
 
     if tg_token and tg_chat_id:
         try:
-            msg = build_telegram_message(matches, args.team)
-            send_telegram_notification(tg_token, tg_chat_id, msg)
+            msgs = build_telegram_messages(matches)
+            for msg in msgs:
+                send_telegram_notification(tg_token, tg_chat_id, msg)
             print("Telegram notification sent")
         except Exception as e:
             print(f"WARNING: Telegram notification failed: {e}", file=sys.stderr)
