@@ -7,10 +7,12 @@ import re
 import sys
 import unicodedata
 from io import BytesIO
+from html.parser import HTMLParser
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Iterable, Iterator, Optional
+from urllib.parse import urljoin
 
 import pdfplumber
 import requests
@@ -99,6 +101,131 @@ def download_pdf_bytes(pdf_url: str, timeout_s: int = 45) -> bytes:
     with requests.get(pdf_url, stream=True, timeout=timeout_s, headers=headers) as r:
         r.raise_for_status()
         return r.content
+
+
+class _AnchorTextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self._in_anchor = False
+        self._current_href: Optional[str] = None
+        self._current_text_parts: list[str] = []
+        self.links: list[tuple[str, str, dict[str, str]]] = []
+        self._current_attrs: dict[str, str] = {}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        if tag.lower() != "a":
+            return
+        self._in_anchor = True
+        self._current_text_parts = []
+        self._current_href = None
+        self._current_attrs = {}
+        for key, value in attrs:
+            if key.lower() == "href" and value:
+                self._current_href = value
+            if value is not None:
+                self._current_attrs[key.lower()] = value
+
+    def handle_data(self, data: str) -> None:
+        if self._in_anchor:
+            self._current_text_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() != "a":
+            return
+        if self._in_anchor:
+            text = "".join(self._current_text_parts).strip()
+            href = self._current_href
+            if href:
+                self.links.append((text, href, dict(self._current_attrs)))
+        self._in_anchor = False
+        self._current_href = None
+        self._current_text_parts = []
+        self._current_attrs = {}
+
+
+def _normalize_anchor_text(text: str) -> str:
+    return _normalize_upper_noaccents(text)
+
+
+def _extract_links_from_html(html: str) -> list[tuple[str, str, dict[str, str]]]:
+    parser = _AnchorTextParser()
+    parser.feed(html)
+    return parser.links
+
+
+def _pdf_looks_like_calendar(pdf_bytes: bytes) -> bool:
+    try:
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            if not pdf.pages:
+                return False
+            text = (pdf.pages[0].extract_text() or "")
+    except Exception:
+        return False
+
+    norm = _normalize_upper_noaccents(text)
+    return ("CALENDARIO" in norm) and ("LIGA INTERNA" in norm)
+
+
+def resolve_pdf_url_from_page(page_url: str, timeout_s: int = 30) -> str:
+    headers = {
+        "User-Agent": "botCanal/1.0 (+https://github.com/)"
+    }
+    with requests.get(page_url, timeout=timeout_s, headers=headers) as r:
+        r.raise_for_status()
+        html = r.text
+
+    links = _extract_links_from_html(html)
+
+    def is_pdf_link(href: str) -> bool:
+        return href.lower().split("?")[0].endswith(".pdf")
+
+    def is_aqui_text(text: str, attrs: dict[str, str]) -> bool:
+        if "AQUI" in _normalize_anchor_text(text):
+            return True
+        for key in ("title", "aria-label", "data-label"):
+            value = attrs.get(key, "")
+            if "AQUI" in _normalize_anchor_text(value):
+                return True
+        return False
+
+    aqui_links: list[str] = []
+    pdf_candidates: list[str] = []
+
+    for text, href, attrs in links:
+        if is_aqui_text(text, attrs):
+            aqui_links.append(href)
+        if is_pdf_link(href):
+            pdf_candidates.append(urljoin(page_url, href))
+
+    for href in aqui_links:
+        abs_href = urljoin(page_url, href)
+        if is_pdf_link(abs_href):
+            pdf_candidates.insert(0, abs_href)
+            continue
+
+        try:
+            with requests.get(abs_href, timeout=timeout_s, headers=headers) as r2:
+                r2.raise_for_status()
+                inner_html = r2.text
+            for _, inner_href, _ in _extract_links_from_html(inner_html):
+                if is_pdf_link(inner_href):
+                    pdf_candidates.append(urljoin(abs_href, inner_href))
+        except Exception:
+            continue
+
+    seen: set[str] = set()
+    for pdf_url in pdf_candidates:
+        if pdf_url in seen:
+            continue
+        seen.add(pdf_url)
+        try:
+            pdf_bytes = download_pdf_bytes(pdf_url)
+        except Exception:
+            continue
+        if _pdf_looks_like_calendar(pdf_bytes):
+            return pdf_url
+
+    raise ValueError("No se encontró un PDF de calendario válido en la página.")
 
 
 def extract_pdf_lines(pdf_bytes: bytes) -> Iterator[tuple[int, str]]:
@@ -379,13 +506,19 @@ def filter_next_match_day(matches: list[Match]) -> list[Match]:
             future_dates.append(d)
 
     if today_dates:
-        return [m for m in matches if m.date == today.isoformat()]
+        start_date = today
+    else:
+        if not future_dates:
+            return []
+        start_date = min(future_dates)
 
-    if not future_dates:
-        return []
+    # Include matches until Sunday of the same week.
+    days_to_sunday = 6 - start_date.weekday()
+    end_date = start_date + timedelta(days=days_to_sunday)
 
-    next_date = min(future_dates)
-    return [m for m in matches if m.date == next_date]
+    start_iso = start_date.isoformat()
+    end_iso = end_date.isoformat()
+    return [m for m in matches if m.date and start_iso <= m.date <= end_iso]
 
 
 def send_telegram_notification(token: str, chat_id: str, message: str) -> None:
@@ -407,40 +540,30 @@ def build_telegram_messages(matches: list[Match]) -> list[str]:
     max_len = 4096
 
     def sort_key(m: Match):
-        return (m.date or "", m.time or "", m.team_code or "")
+        return (m.team_code or "", m.date or "", m.time or "")
 
     matches_sorted = sorted(matches, key=sort_key)
 
-    # Group by hour
-    grouped: dict[str, list[Match]] = {}
-    for m in matches_sorted:
-        key = m.time or "(sin hora)"
-        grouped.setdefault(key, []).append(m)
-
     messages: list[str] = []
-    common_date = matches_sorted[0].date if matches_sorted else None
-    date_line = f"Fecha: {common_date}" if common_date else "Fecha: (sin fecha)"
+    lines: list[str] = [header]
 
-    for hour_key, items in grouped.items():
-        lines = [header, date_line, f"Hora: {hour_key}"]
-        for m in items:
-            lines.append(f"- {m.team_code} {m.jersey_color}")
-        msg = "\n".join(lines)
-        if len(msg) <= max_len:
-            messages.append(msg)
-            continue
+    for m in matches_sorted:
+        team = m.team_code or "(sin equipo)"
+        date = m.date or "(sin fecha)"
+        time = m.time or "(sin hora)"
+        campo = m.campo or "(sin campo)"
+        color = m.jersey_color or "(sin color)"
+        line = f"- {team} | {date} {time} | {campo} | {color}"
 
-        # If still too long, split the list into chunks
-        chunk: list[str] = [header, date_line, f"Hora: {hour_key}"]
-        for line in lines[3:]:
-            candidate = "\n".join(chunk + [line])
-            if len(candidate) > max_len:
-                messages.append("\n".join(chunk))
-                chunk = [header, date_line, f"Hora: {hour_key}", line]
-            else:
-                chunk.append(line)
-        if chunk:
-            messages.append("\n".join(chunk))
+        candidate = "\n".join(lines + [line])
+        if len(candidate) > max_len:
+            messages.append("\n".join(lines))
+            lines = [header, line]
+        else:
+            lines.append(line)
+
+    if lines:
+        messages.append("\n".join(lines))
 
     return messages
 
@@ -450,20 +573,29 @@ def main(argv: list[str]) -> int:
 
     parser = argparse.ArgumentParser(description="Download calendar PDF, extract I12 matches, write outputs, optional Telegram notify.")
     parser.add_argument("--pdf-url", default=os.getenv("PDF_URL"), help="Calendar PDF URL (or set PDF_URL env var)")
+    parser.add_argument(
+        "--page-url",
+        default=os.getenv("PAGE_URL", "https://www.ocioydeportecanal.es/es/page/view/escuela_futbol"),
+        help="Página donde buscar el enlace 'AQUI' (o set PAGE_URL env var)",
+    )
     parser.add_argument("--team", default=os.getenv("TEAM_CODE", ""), help="(Ignored) Team code filter is disabled; all teams are always included")
     parser.add_argument("--output-dir", default="output", help="Output directory (default: output)")
     parser.add_argument("--no-telegram", action="store_true", help="Disable Telegram notification even if secrets are present")
 
     args = parser.parse_args(argv)
 
-    if not args.pdf_url:
-        print("ERROR: PDF_URL is not set. Provide --pdf-url or set PDF_URL env var.", file=sys.stderr)
-        return 2
+    pdf_url = args.pdf_url
+    if not pdf_url:
+        try:
+            pdf_url = resolve_pdf_url_from_page(args.page_url)
+        except Exception as e:
+            print(f"ERROR: No se pudo resolver el PDF desde la página: {e}", file=sys.stderr)
+            return 2
 
     output_dir = Path(args.output_dir)
 
     try:
-        pdf_bytes = download_pdf_bytes(args.pdf_url)
+        pdf_bytes = download_pdf_bytes(pdf_url)
         lines = list(extract_pdf_lines(pdf_bytes))
         matches = parse_matches(lines, None)
         matches = filter_next_match_day(matches)
