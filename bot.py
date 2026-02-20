@@ -166,18 +166,83 @@ def _pdf_looks_like_calendar(pdf_bytes: bytes) -> bool:
     return ("CALENDARIO" in norm) and ("LIGA INTERNA" in norm)
 
 
+def _find_aqui_href_after_context(html: str, context_text: str = "Para consultar el calendario de competiciones pinche") -> Optional[str]:
+    """Find the href of the first <a> with text 'AQUÍ' that appears right after *context_text* in the HTML."""
+    norm_context = _normalize_upper_noaccents(context_text)
+    norm_html = _normalize_upper_noaccents(html)
+
+    pos = norm_html.find(norm_context)
+    if pos == -1:
+        return None
+
+    # Search for the next <a …>AQUÍ</a> in the original HTML after the context position
+    remainder = html[pos:]
+    anchor_re = re.compile(r'<a\s[^>]*href=["\']([^"\']+)["\'][^>]*>\s*AQU[IÍ]\s*</a>', re.IGNORECASE)
+    m = anchor_re.search(remainder)
+    if m:
+        return m.group(1)
+    return None
+
+
 def resolve_pdf_url_from_page(page_url: str, timeout_s: int = 30) -> str:
     headers = {
         "User-Agent": "botCanal/1.0 (+https://github.com/)"
     }
+    print(f"[LOG] Accediendo a la página: {page_url}")
     with requests.get(page_url, timeout=timeout_s, headers=headers) as r:
         r.raise_for_status()
         html = r.text
-
-    links = _extract_links_from_html(html)
+    print(f"[LOG] Página descargada correctamente ({len(html)} bytes)")
 
     def is_pdf_link(href: str) -> bool:
         return href.lower().split("?")[0].endswith(".pdf")
+
+    # --- Strategy 1: locate the "AQUÍ" link that follows the calendar context text ---
+    print("[LOG] Estrategia 1: buscando texto 'Para consultar el calendario de competiciones pinche' ...")
+    context_href = _find_aqui_href_after_context(html)
+    if context_href:
+        abs_href = urljoin(page_url, context_href)
+        print(f"[LOG] Texto de contexto encontrado. Enlace 'AQUÍ' extraído: {abs_href}")
+        if is_pdf_link(abs_href):
+            print(f"[LOG] El enlace apunta directamente a un PDF. Descargando ...")
+            try:
+                pdf_bytes = download_pdf_bytes(abs_href)
+                if _pdf_looks_like_calendar(pdf_bytes):
+                    print(f"[LOG] PDF de calendario válido encontrado: {abs_href}")
+                    return abs_href
+                else:
+                    print("[LOG] El PDF descargado no parece un calendario válido.")
+            except Exception as e:
+                print(f"[LOG] Error al descargar el PDF: {e}")
+        else:
+            # The link may point to an intermediate page containing the PDF
+            print(f"[LOG] El enlace no es un PDF directo. Navegando a página intermedia: {abs_href}")
+            try:
+                with requests.get(abs_href, timeout=timeout_s, headers=headers) as r2:
+                    r2.raise_for_status()
+                    inner_html = r2.text
+                for _, inner_href, _ in _extract_links_from_html(inner_html):
+                    if is_pdf_link(inner_href):
+                        inner_abs = urljoin(abs_href, inner_href)
+                        print(f"[LOG] PDF encontrado en página intermedia: {inner_abs}")
+                        try:
+                            pdf_bytes = download_pdf_bytes(inner_abs)
+                            if _pdf_looks_like_calendar(pdf_bytes):
+                                print(f"[LOG] PDF de calendario válido encontrado: {inner_abs}")
+                                return inner_abs
+                            else:
+                                print(f"[LOG] El PDF {inner_abs} no parece un calendario válido.")
+                        except Exception as e:
+                            print(f"[LOG] Error al descargar {inner_abs}: {e}")
+                            continue
+            except Exception as e:
+                print(f"[LOG] Error al acceder a página intermedia: {e}")
+    else:
+        print("[LOG] Texto de contexto no encontrado en la página.")
+
+    # --- Strategy 2 (fallback): scan all "AQUÍ" links and PDF links on the page ---
+    print("[LOG] Estrategia 2 (fallback): buscando todos los enlaces 'AQUÍ' y PDF en la página ...")
+    links = _extract_links_from_html(html)
 
     def is_aqui_text(text: str, attrs: dict[str, str]) -> bool:
         if "AQUI" in _normalize_anchor_text(text):
@@ -218,12 +283,17 @@ def resolve_pdf_url_from_page(page_url: str, timeout_s: int = 30) -> str:
         if pdf_url in seen:
             continue
         seen.add(pdf_url)
+        print(f"[LOG] Probando candidato PDF: {pdf_url}")
         try:
             pdf_bytes = download_pdf_bytes(pdf_url)
-        except Exception:
+        except Exception as e:
+            print(f"[LOG] Error al descargar {pdf_url}: {e}")
             continue
         if _pdf_looks_like_calendar(pdf_bytes):
+            print(f"[LOG] PDF de calendario válido encontrado (fallback): {pdf_url}")
             return pdf_url
+        else:
+            print(f"[LOG] {pdf_url} descargado pero no es un calendario válido.")
 
     raise ValueError("No se encontró un PDF de calendario válido en la página.")
 
@@ -296,6 +366,9 @@ def _parse_date_time(raw_line: str, default_year: Optional[int] = None) -> tuple
 
 
 def _infer_default_year(lines: Iterable[tuple[int, str]]) -> Optional[int]:
+    """Return the most common year found among explicit dd/mm/yy dates in the PDF."""
+    from collections import Counter
+    year_counts: Counter[int] = Counter()
     for _, line in lines:
         m = _DATE_RE.search(line)
         if not m:
@@ -310,8 +383,10 @@ def _infer_default_year(lines: Iterable[tuple[int, str]]) -> Optional[int]:
         if 0 <= y <= 99:
             y = 2000 + y
         if 1900 <= y <= 2100:
-            return y
-    return None
+            year_counts[y] += 1
+    if not year_counts:
+        return None
+    return year_counts.most_common(1)[0][0]
 
 
 def _cleanup_team_name(s: str) -> str:
@@ -578,7 +653,7 @@ def main(argv: list[str]) -> int:
         default=os.getenv("PAGE_URL", "https://www.ocioydeportecanal.es/es/page/view/escuela_futbol"),
         help="Página donde buscar el enlace 'AQUI' (o set PAGE_URL env var)",
     )
-    parser.add_argument("--team", default=os.getenv("TEAM_CODE", ""), help="(Ignored) Team code filter is disabled; all teams are always included")
+    parser.add_argument("--team", default=os.getenv("TEAM_CODE", ""), help="Team code to filter (e.g. I12). If empty, all teams are included.")
     parser.add_argument("--output-dir", default="output", help="Output directory (default: output)")
     parser.add_argument("--no-telegram", action="store_true", help="Disable Telegram notification even if secrets are present")
 
@@ -586,19 +661,33 @@ def main(argv: list[str]) -> int:
 
     pdf_url = args.pdf_url
     if not pdf_url:
+        print("[LOG] No se proporcionó URL de PDF directa. Resolviendo desde la página ...")
         try:
             pdf_url = resolve_pdf_url_from_page(args.page_url)
         except Exception as e:
             print(f"ERROR: No se pudo resolver el PDF desde la página: {e}", file=sys.stderr)
             return 2
+    else:
+        print(f"[LOG] Usando URL de PDF proporcionada: {pdf_url}")
 
+    print(f"[LOG] URL del PDF resuelta: {pdf_url}")
     output_dir = Path(args.output_dir)
 
     try:
+        print("[LOG] Descargando PDF ...")
         pdf_bytes = download_pdf_bytes(pdf_url)
+        print(f"[LOG] PDF descargado ({len(pdf_bytes)} bytes)")
         lines = list(extract_pdf_lines(pdf_bytes))
-        matches = parse_matches(lines, None)
+        print(f"[LOG] Líneas extraídas del PDF: {len(lines)}")
+        team_filter = args.team.strip() if args.team else None
+        if team_filter:
+            print(f"[LOG] Filtrando partidos para equipo: {team_filter}")
+        else:
+            print("[LOG] Sin filtro de equipo, incluyendo todos los equipos.")
+        matches = parse_matches(lines, team_filter)
+        print(f"[LOG] Partidos encontrados: {len(matches)}")
         matches = filter_next_match_day(matches)
+        print(f"[LOG] Partidos tras filtrar próxima jornada: {len(matches)}")
         json_path, txt_path = write_outputs(matches, output_dir)
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
