@@ -30,7 +30,7 @@ jobs:
         env:
           # Prefer a repository variable; otherwise use a secret.
           PDF_URL: ${{ vars.PDF_URL != '' && vars.PDF_URL || secrets.PDF_URL }}
-          TEAM_CODE: I12
+          TEAM_CODE: ${{ vars.TEAM_CODE != '' && vars.TEAM_CODE || secrets.TEAM_CODE }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |

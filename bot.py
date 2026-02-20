@@ -90,10 +90,6 @@ def _parse_spanish_date_heading(line: str, default_year: Optional[int]) -> Optio
     return _iso_date(day, month, default_year)
 
 
-def download_pdf(pdf_url: str, dest_path: Path, timeout_s: int = 45) -> None:
-    raise NotImplementedError("download_pdf is no longer used; use download_pdf_bytes instead")
-
-
 def download_pdf_bytes(pdf_url: str, timeout_s: int = 45) -> bytes:
     headers = {
         "User-Agent": "botCanal/1.0 (+https://github.com/)"
