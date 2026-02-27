@@ -1,5 +1,8 @@
 name: Calendar bot
 
+permissions:
+  contents: write
+
 on:
   schedule:
     # Every Wednesday and Friday at 07:00 UTC
