@@ -1,5 +1,5 @@
 Teams: all
-Generated (UTC): 2026-03-13T07:20:23.237338+00:00
+Generated (UTC): 2026-03-18T07:28:25.213812+00:00
 Matches: 1
 
-- 2026-03-14 13:00 I12 azul Campo 3 (NORTE)
+- 2026-03-21 14:00 I12 azul Campo 3 (NORTE)
