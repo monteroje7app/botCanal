@@ -1,5 +1,13 @@
 {
-  "generated_at": "2026-05-13T08:03:30.526434+00:00",
-  "count": 0,
-  "matches": []
+  "generated_at": "2026-05-15T08:00:56.729633+00:00",
+  "count": 1,
+  "matches": [
+    {
+      "team": "I12",
+      "date": "2026-05-23",
+      "time": "09:00",
+      "color": "blanco",
+      "campo": "Campo 1 (PRINCIPAL)"
+    }
+  ]
 }
