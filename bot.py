@@ -646,7 +646,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--pdf-url", default=os.getenv("PDF_URL"), help="Calendar PDF URL (or set PDF_URL env var)")
     parser.add_argument(
         "--page-url",
-        default=os.getenv("PAGE_URL", "https://www.ocioydeportecanal.es/es/page/view/escuela_futbol"),
+        default=os.getenv("PAGE_URL", "https://www.ocioydeportecanal.es/es/page/view/escuela_futbol_25_26"),
         help="Página donde buscar el enlace 'AQUI' (o set PAGE_URL env var)",
     )
     parser.add_argument("--team", default=os.getenv("TEAM_CODE", ""), help="Team code to filter (e.g. I12). If empty, all teams are included.")
