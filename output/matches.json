@@ -1,18 +1,32 @@
 {
-  "generated_at": "2026-05-29T08:18:27.120445+00:00",
-  "count": 2,
+  "generated_at": "2026-06-03T08:42:05.924094+00:00",
+  "count": 4,
   "matches": [
     {
       "team": "I12",
-      "date": "2026-06-13",
-      "time": "09:00",
+      "date": "2026-06-06",
+      "time": "12:00",
       "color": "blanco",
-      "campo": "Campo 1 (PRINCIPAL)"
+      "campo": "Campo 3 (NORTE)"
     },
     {
       "team": "I12",
-      "date": "2026-06-13",
-      "time": "10:00",
+      "date": "2026-06-06",
+      "time": "12:30",
+      "color": "blanco",
+      "campo": "Campo 3 (NORTE)"
+    },
+    {
+      "team": "I12",
+      "date": "2026-06-06",
+      "time": "13:00",
+      "color": "blanco",
+      "campo": "Campo 2 (CENTRAL)"
+    },
+    {
+      "team": "I12",
+      "date": "2026-06-06",
+      "time": "14:00",
       "color": "blanco",
       "campo": "Campo 1 (PRINCIPAL)"
     }
