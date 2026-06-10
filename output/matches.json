@@ -1,34 +1,5 @@
 {
-  "generated_at": "2026-06-05T08:22:40.717562+00:00",
-  "count": 4,
-  "matches": [
-    {
-      "team": "I12",
-      "date": "2026-06-06",
-      "time": "12:00",
-      "color": "blanco",
-      "campo": "Campo 3 (NORTE)"
-    },
-    {
-      "team": "I12",
-      "date": "2026-06-06",
-      "time": "12:30",
-      "color": "blanco",
-      "campo": "Campo 3 (NORTE)"
-    },
-    {
-      "team": "I12",
-      "date": "2026-06-06",
-      "time": "13:00",
-      "color": "blanco",
-      "campo": "Campo 2 (CENTRAL)"
-    },
-    {
-      "team": "I12",
-      "date": "2026-06-06",
-      "time": "14:00",
-      "color": "blanco",
-      "campo": "Campo 1 (PRINCIPAL)"
-    }
-  ]
+  "generated_at": "2026-06-10T08:27:31.075766+00:00",
+  "count": 0,
+  "matches": []
 }

@@ -1,8 +1,4 @@
 Teams: all
-Generated (UTC): 2026-06-05T08:22:40.717562+00:00
-Matches: 4
+Generated (UTC): 2026-06-10T08:27:31.075766+00:00
+Matches: 0
 
-- 2026-06-06 12:00 I12 blanco Campo 3 (NORTE)
-- 2026-06-06 12:30 I12 blanco Campo 3 (NORTE)
-- 2026-06-06 13:00 I12 blanco Campo 2 (CENTRAL)
-- 2026-06-06 14:00 I12 blanco Campo 1 (PRINCIPAL)
