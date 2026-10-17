@@ -581,7 +581,7 @@ def _jersey_with_emoji(color: Optional[str]) -> str:
     return f"{emoji} {color}" if emoji else color
 
 
-def write_outputs(matches: list[Match], output_dir: Path) -> tuple[Path, Path]:
+def write_outputs(matches: list[Match], output_dir: Path, team_filter: Optional[str] = None) -> tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     json_path = output_dir / "matches.json"
@@ -613,7 +613,7 @@ def write_outputs(matches: list[Match], output_dir: Path) -> tuple[Path, Path]:
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     lines: list[str] = []
-    lines.append("Teams: all" if not matches else "Teams: all")
+    lines.append(f"Teams: {team_filter or 'all'}")
     lines.append(f"Generated (UTC): {payload['generated_at']}")
     lines.append(f"Matches: {len(sorted_matches)}")
     lines.append("")
@@ -751,7 +751,7 @@ def main(argv: list[str]) -> int:
         print(f"[LOG] Partidos encontrados: {len(matches)}")
         matches = filter_next_match_day(matches)
         print(f"[LOG] Partidos tras filtrar próxima jornada: {len(matches)}")
-        json_path, txt_path = write_outputs(matches, output_dir)
+        json_path, txt_path = write_outputs(matches, output_dir, team_filter)
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1

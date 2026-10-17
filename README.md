@@ -1,8 +1,11 @@
 # botCanal
 
-Bot en Python que descarga un PDF de calendario, infiere la **fecha** desde encabezados tipo `31 DE ENERO` y detecta el **color de camiseta** (según el color de fondo de cada celda: `azul` o `blanco`).
+Bot en Python que descarga el PDF del calendario de la escuela de fútbol de Ocio y Deporte Canal y extrae los partidos de **LIGA INTERNA** de un equipo: **fecha**, **hora**, **campo** y **color de camiseta**.
 
-Siempre extrae **todos los equipos** del día de ejecución. Si no hay partidos hoy, devuelve la **próxima fecha disponible**.
+- **Equipo:** se filtra por `TEAM_CODE` (p. ej. `CJ11`). Si está vacío, incluye todos los equipos.
+- **Jornada:** devuelve los partidos de hoy hasta el domingo; si hoy no hay, los de la próxima fecha disponible hasta el domingo de esa semana.
+- **Fecha:** se toma de los encabezados del PDF (`17 DE OCTUBRE`, `VIERNES 23 DE OCTUBRE`). El año se deduce por mes a partir de las fechas explícitas `dd/mm/yyyy` del propio PDF, porque la temporada cruza dos años.
+- **Campo y color:** se asignan por la posición de cada equipo bajo las columnas `LOCAL` / `VISITANTE` de cada campo. `LOCAL` = ⚪ `blanco`, `VISITANTE` = 🔵 `azul`.
 
 Genera:
 - `output/matches.json`
@@ -33,9 +36,14 @@ Crea tu `.env` a partir del ejemplo:
 cp .env.example .env
 ```
 
-Edita `.env` y define al menos:
+Variables:
 
-- `PDF_URL=...`
+- `PDF_URL`: URL directa del PDF del calendario. Si no se define, el bot intenta encontrar el enlace en `PAGE_URL`.
+- `PAGE_URL`: página donde buscar el enlace al PDF (por defecto `https://www.ocioydeportecanal.es/es/page/view/escuela_futbol_25_26`).
+- `TEAM_CODE`: código del equipo a filtrar (p. ej. `CJ11`). Vacío = todos.
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`: opcionales.
+
+> En la temporada 26-27 ninguna página de la web enlaza el PDF de forma que el bot lo encuentre, así que hay que definir `PDF_URL` y actualizarla cuando publiquen un calendario nuevo.
 
 ---
 
@@ -47,11 +55,13 @@ Edita `.env` y define al menos:
 python bot.py
 ```
 
-### Pasando la URL por argumento
+### Pasando URL y equipo por argumento
 
 ```bash
-python bot.py --pdf-url "https://.../calendario.pdf"
+python bot.py --pdf-url "https://.../calendario.pdf" --team CJ11
 ```
+
+Los argumentos tienen prioridad sobre las variables de entorno.
 
 ### Desactivar Telegram aunque existan secrets
 
@@ -68,18 +78,21 @@ python bot.py --no-telegram
 Estructura:
 
 - `generated_at`: timestamp UTC
-- `count`: número de coincidencias
+- `count`: número de partidos
 - `matches`: lista de objetos con:
   - `team`: código de equipo
   - `date`: `YYYY-MM-DD`
   - `time`: `HH:MM`
   - `color`: `azul` | `blanco`
+  - `campo`: p. ej. `Campo 1 (PRINCIPAL)`
 
 ### `output/matches.txt`
 
-Lista legible, una línea por partido:
+Cabecera con el equipo filtrado (`Teams: CJ11`, o `Teams: all` sin filtro), fecha de generación y número de partidos; después, una línea por partido:
 
-- `YYYY-MM-DD HH:MM TEAM azul|blanco`
+```
+- 2026-10-17 09:00 CJ11 🔵 azul Campo 1 (PRINCIPAL)
+```
 
 ---
 
@@ -90,7 +103,12 @@ Si defines:
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 
-…el bot enviará un mensaje con un resumen de resultados.
+…el bot enviará un mensaje con los partidos de la jornada:
+
+```
+Calendario actualizado
+- CJ11 | 2026-10-17 09:00 | Campo 1 (PRINCIPAL) | 🔵 azul
+```
 
 Canal de Telegram donde se publican los resultados:
 - https://t.me/OcioCanalFutbol
@@ -101,22 +119,22 @@ Canal de Telegram donde se publican los resultados:
 
 El workflow está en `.github/workflows/calendar-bot.yml` y soporta:
 
-- Ejecución programada: **viernes 07:00 UTC**
-- Ejecución manual: `workflow_dispatch`
+- Ejecución programada: **miércoles y viernes 07:00 UTC**
+- Ejecución manual: `workflow_dispatch` (`gh workflow run calendar-bot.yml`)
 
-### Configurar `PDF_URL`
+> Para pausar la ejecución programada, elimina o comenta el bloque `schedule:` **entero**. Si solo comentas las líneas `cron`, `schedule:` queda vacío y el workflow deja de ser válido (tampoco se podrá lanzar a mano).
 
-El workflow acepta `PDF_URL` de dos maneras:
+### Configurar `PDF_URL` y `TEAM_CODE`
 
-1) **Repository Variable** (recomendado si no es sensible)
+El workflow lee `PDF_URL` y `TEAM_CODE` de las **Repository Variables** y, si no existen, de los **Repository Secrets** con el mismo nombre.
+
 - `Settings → Secrets and variables → Actions → Variables → New repository variable`
-- Name: `PDF_URL`
-- Value: la URL del PDF
+- O desde la terminal:
 
-2) **Repository Secret** (si prefieres tratarlo como sensible)
-- `Settings → Secrets and variables → Actions → Secrets → New repository secret`
-- Name: `PDF_URL`
-- Value: la URL del PDF
+```bash
+gh variable set TEAM_CODE --body "CJ11"
+gh variable set PDF_URL --body "https://.../calendario.pdf"
+```
 
 ### Configurar Telegram en GitHub
 
@@ -129,14 +147,16 @@ Si no existen, el workflow correrá igual (solo que no notificará).
 
 ### Ver resultados del workflow
 
-En cada ejecución, el workflow sube el contenido de `output/` como artifact (`matches-output`).
+En cada ejecución, el workflow:
+
+- hace commit de `output/matches.json` y `output/matches.txt` en `main` si cambiaron (`chore: update matches output [skip ci]`);
+- sube el contenido de `output/` como artifact (`matches-output`).
 
 ---
 
 ## Notas sobre `output/`
 
-La carpeta `output/` se mantiene en el repo solo con `output/.gitkeep`.
-Los archivos generados (`matches.json`, `matches.txt`) **no se commitean** y están ignorados en `.gitignore`.
+`output/*` está en `.gitignore` (salvo `output/.gitkeep`), así que lo que generes en local no se commitea por accidente. Los `matches.*` que hay en el repo los añade el workflow de GitHub Actions explícitamente.
 
 ---
 
@@ -146,4 +166,6 @@ Los archivos generados (`matches.json`, `matches.txt`) **no se commitean** y est
   - `source .venv/bin/activate`
   - `pip install -r requirements.txt`
 
-- Si `date` sale vacío, suele indicar que el PDF no contiene encabezados de fecha en formato tipo `31 DE ENERO` o que el texto no se puede extraer correctamente (depende de cómo esté generado el PDF).
+- Si `date` sale vacío, suele indicar que el PDF no contiene encabezados de fecha tipo `17 DE OCTUBRE` / `VIERNES 23 DE OCTUBRE` o que el texto no se puede extraer correctamente (depende de cómo esté generado el PDF).
+
+- Si sale `Matches: 0` en plena temporada, revisa que `PDF_URL` apunte al calendario vigente y que `TEAM_CODE` exista en él.
