@@ -1,5 +1,13 @@
 {
-  "generated_at": "2026-08-07T07:30:31.410379+00:00",
-  "count": 0,
-  "matches": []
+  "generated_at": "2026-10-17T09:30:00.408654+00:00",
+  "count": 1,
+  "matches": [
+    {
+      "team": "CJ11",
+      "date": "2026-10-17",
+      "time": "09:00",
+      "color": "azul",
+      "campo": "Campo 1 (PRINCIPAL)"
+    }
+  ]
 }
