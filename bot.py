@@ -33,11 +33,16 @@ class Match:
 _DATE_RE = re.compile(r"\b(?P<d>\d{1,2})[\/\.-](?P<m>\d{1,2})(?:[\/\.-](?P<y>\d{2,4}))?\b")
 _TIME_RE = re.compile(r"\b(?P<h>\d{1,2})[:\.](?P<min>\d{2})\b")
 _SCORE_RE = re.compile(r"\b\d{1,2}\s*[-:]\s*\d{1,2}\b")
-_TEAM_TOKEN_RE = re.compile(r"\b[A-Z]{1,3}\d{1,3}\b")
+# Placeholder for an empty LOCAL/VISITANTE cell, so team tokens keep their column index.
+_EMPTY_SLOT = "--"
+_TEAM_TOKEN_RE = re.compile(r"\b[A-Z]{1,3}\d{1,3}\b|(?<!\S)--(?!\S)")
 _TIME_RANGE_RE = re.compile(r"^(?P<start>\d{1,2}:\d{2})\s*-\s*(?P<end>\d{1,2}:\d{2})")
 _CAMPO_HEADER_RE = re.compile(r"CAMPO\s+\d+\s*(?:\(([^)]+)\))?", re.IGNORECASE)
 
-_SPANISH_DATE_HEADING_RE = re.compile(r"^\s*(?P<d>\d{1,2})\s+DE\s+(?P<mon>[A-ZÁÉÍÓÚÜÑ]+)\s*$", re.IGNORECASE)
+_SPANISH_DATE_HEADING_RE = re.compile(
+    r"^\s*(?:(?:LUNES|MARTES|MI[EÉ]RCOLES|JUEVES|VIERNES|S[AÁ]BADO|DOMINGO)\s+)?(?P<d>\d{1,2})\s+DE\s+(?P<mon>[A-ZÁÉÍÓÚÜÑ]+)\s*$",
+    re.IGNORECASE,
+)
 
 _SPANISH_MONTHS = {
     "ENERO": 1,
@@ -73,7 +78,9 @@ def _normalize_upper_noaccents(s: str) -> str:
     return s.upper().strip()
 
 
-def _parse_spanish_date_heading(line: str, default_year: Optional[int]) -> Optional[str]:
+def _parse_spanish_date_heading(
+    line: str, default_year: Optional[int], month_years: Optional[dict[int, int]] = None
+) -> Optional[str]:
     if default_year is None:
         return None
 
@@ -87,7 +94,8 @@ def _parse_spanish_date_heading(line: str, default_year: Optional[int]) -> Optio
     if not month:
         return None
 
-    return _iso_date(day, month, default_year)
+    year = (month_years or {}).get(month, default_year)
+    return _iso_date(day, month, year)
 
 
 def download_pdf_bytes(pdf_url: str, timeout_s: int = 45) -> bytes:
@@ -294,14 +302,43 @@ def resolve_pdf_url_from_page(page_url: str, timeout_s: int = 30) -> str:
     raise ValueError("No se encontró un PDF de calendario válido en la página.")
 
 
+def _rebuild_row_by_columns(time_text: str, words: list[dict], slot_centers: list[float]) -> str:
+    """Rebuild a match row placing each word in its LOCAL/VISITANTE column; empty slots become '--'."""
+    slots: list[list[str]] = [[] for _ in slot_centers]
+    for w in words:
+        center = (w["x0"] + w["x1"]) / 2
+        idx = min(range(len(slot_centers)), key=lambda k: abs(slot_centers[k] - center))
+        slots[idx].append(w["text"])
+    while slots and not slots[-1]:
+        slots.pop()
+    return " ".join([time_text] + [" ".join(cell) if cell else _EMPTY_SLOT for cell in slots])
+
+
 def extract_pdf_lines(pdf_bytes: bytes) -> Iterator[tuple[int, str]]:
     with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
         for page_index, page in enumerate(pdf.pages, start=1):
-            text = page.extract_text() or ""
-            for line in text.splitlines():
-                cleaned = " ".join(line.split())
-                if cleaned:
-                    yield page_index, cleaned
+            words = page.extract_words()
+            slot_centers: list[float] = []
+            for text_line in page.extract_text_lines():
+                cleaned = " ".join(text_line["text"].split())
+                if not cleaned:
+                    continue
+                line_words = [
+                    w for w in words
+                    if w["top"] < text_line["bottom"] and w["bottom"] > text_line["top"]
+                ]
+                upper = cleaned.upper()
+                if "LOCAL" in upper and "VISITANTE" in upper:
+                    slot_centers = [
+                        (w["x0"] + w["x1"]) / 2
+                        for w in sorted(line_words, key=lambda w: w["x0"])
+                        if w["text"].upper() in ("LOCAL", "VISITANTE")
+                    ]
+                elif slot_centers and _TIME_RANGE_RE.match(cleaned) and line_words:
+                    line_words.sort(key=lambda w: w["x0"])
+                    if _TIME_RANGE_RE.match(line_words[0]["text"]):
+                        cleaned = _rebuild_row_by_columns(line_words[0]["text"], line_words[1:], slot_centers)
+                yield page_index, cleaned
 
 
 
@@ -385,6 +422,23 @@ def _infer_default_year(lines: Iterable[tuple[int, str]]) -> Optional[int]:
     return year_counts.most_common(1)[0][0]
 
 
+def _infer_month_years(lines: Iterable[tuple[int, str]]) -> dict[int, int]:
+    """Map month -> most common year among explicit dd/mm/yy dates (seasons span two years)."""
+    from collections import Counter
+    counts: dict[int, Counter[int]] = {}
+    for _, line in lines:
+        m = _DATE_RE.search(line)
+        if not m or not m.group("y"):
+            continue
+        y = int(m.group("y"))
+        if 0 <= y <= 99:
+            y = 2000 + y
+        mo = int(m.group("m"))
+        if 1900 <= y <= 2100 and 1 <= mo <= 12:
+            counts.setdefault(mo, Counter())[y] += 1
+    return {mo: c.most_common(1)[0][0] for mo, c in counts.items()}
+
+
 def _cleanup_team_name(s: str) -> str:
     s = s.strip()
     s = re.sub(r"[\|•·]+", " ", s)
@@ -436,6 +490,7 @@ def parse_matches(
     default_year = _infer_default_year(lines_list)
     if default_year is None:
         default_year = datetime.now(timezone.utc).year
+    month_years = _infer_month_years(lines_list)
 
     matches: list[Match] = []
     seen: set[tuple] = set()
@@ -446,7 +501,7 @@ def parse_matches(
     # Color is derived from LOCAL/VISITANTE column position.
 
     for page, line in lines_list:
-        heading_date = _parse_spanish_date_heading(line, default_year)
+        heading_date = _parse_spanish_date_heading(line, default_year, month_years)
         if heading_date:
             current_context_date = heading_date
             in_liga_interna = False
@@ -478,6 +533,8 @@ def parse_matches(
             continue
 
         for idx_token, token in enumerate(team_tokens):
+            if token == _EMPTY_SLOT:
+                continue
             if team_code_norm and token.lower() != team_code_norm.lower():
                 continue
 
@@ -512,6 +569,16 @@ def parse_matches(
             matches.append(match)
 
     return matches
+
+
+_JERSEY_EMOJI = {"azul": "🔵", "blanco": "⚪"}
+
+
+def _jersey_with_emoji(color: Optional[str]) -> str:
+    if not color:
+        return "(sin color)"
+    emoji = _JERSEY_EMOJI.get(color.lower())
+    return f"{emoji} {color}" if emoji else color
 
 
 def write_outputs(matches: list[Match], output_dir: Path) -> tuple[Path, Path]:
@@ -554,7 +621,7 @@ def write_outputs(matches: list[Match], output_dir: Path) -> tuple[Path, Path]:
     for m in sorted_matches:
         dt = " ".join([p for p in [m.date or "", m.time or ""] if p]).strip() or "(no date/time)"
         campo_text = f" {m.campo}" if m.campo else ""
-        lines.append(f"- {dt} {m.team_code} {m.jersey_color}{campo_text}")
+        lines.append(f"- {dt} {m.team_code} {_jersey_with_emoji(m.jersey_color)}{campo_text}")
 
     txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return json_path, txt_path
@@ -623,7 +690,7 @@ def build_telegram_messages(matches: list[Match]) -> list[str]:
         date = m.date or "(sin fecha)"
         time = m.time or "(sin hora)"
         campo = m.campo or "(sin campo)"
-        color = m.jersey_color or "(sin color)"
+        color = _jersey_with_emoji(m.jersey_color)
         line = f"- {team} | {date} {time} | {campo} | {color}"
 
         candidate = "\n".join(lines + [line])
