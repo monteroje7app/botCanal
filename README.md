@@ -38,12 +38,12 @@ cp .env.example .env
 
 Variables:
 
-- `PDF_URL`: URL directa del PDF del calendario. Si no se define, el bot intenta encontrar el enlace en `PAGE_URL`.
-- `PAGE_URL`: página donde buscar el enlace al PDF (por defecto `https://www.ocioydeportecanal.es/es/page/view/escuela_futbol_25_26`).
+- `PAGE_URL`: página donde buscar el enlace al PDF (por defecto `https://www.ocioydeportecanal.es/es/page/view/escuela_futbol`). El bot busca el enlace `AQUÍ` que sigue al texto «Calendario de competiciones» y comprueba que el PDF sea un calendario (`CALENDARIO` + `LIGA INTERNA` en sus primeras páginas).
+- `PDF_URL`: URL de respaldo del PDF. Solo se usa si no se puede resolver el PDF desde `PAGE_URL`; en ese caso el bot avisa con un `WARNING` porque puede estar desactualizada.
 - `TEAM_CODE`: código del equipo a filtrar (p. ej. `CJ11`). Vacío = todos.
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`: opcionales.
 
-> En la temporada 26-27 ninguna página de la web enlaza el PDF de forma que el bot lo encuentre, así que hay que definir `PDF_URL` y actualizarla cuando publiquen un calendario nuevo.
+> El club publica un PDF nuevo (con otra URL) cada vez que cambia el calendario, así que una `PDF_URL` fija se queda obsoleta sin avisar. Por eso el bot resuelve siempre el PDF desde la página y solo recurre a `PDF_URL` como respaldo.
 
 ---
 
@@ -55,13 +55,13 @@ Variables:
 python bot.py
 ```
 
-### Pasando URL y equipo por argumento
+### Pasando página, URL de respaldo y equipo por argumento
 
 ```bash
-python bot.py --pdf-url "https://.../calendario.pdf" --team CJ11
+python bot.py --page-url "https://www.ocioydeportecanal.es/es/page/view/escuela_futbol" --pdf-url "https://.../calendario.pdf" --team CJ11
 ```
 
-Los argumentos tienen prioridad sobre las variables de entorno.
+Los argumentos tienen prioridad sobre las variables de entorno. `--pdf-url` es solo el respaldo si la página no enlaza un calendario válido.
 
 ### Desactivar Telegram aunque existan secrets
 

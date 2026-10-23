@@ -7,6 +7,7 @@ import re
 import sys
 import unicodedata
 from io import BytesIO
+from html import unescape as html_unescape
 from html.parser import HTMLParser
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone, timedelta
@@ -157,12 +158,13 @@ def _extract_links_from_html(html: str) -> list[tuple[str, str, dict[str, str]]]
     return parser.links
 
 
-def _pdf_looks_like_calendar(pdf_bytes: bytes) -> bool:
+def _pdf_looks_like_calendar(pdf_bytes: bytes, max_pages: int = 3) -> bool:
+    """True if the first pages mention CALENDARIO and LIGA INTERNA (page 1 is usually a cover)."""
     try:
         with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
             if not pdf.pages:
                 return False
-            text = (pdf.pages[0].extract_text() or "")
+            text = "\n".join((page.extract_text() or "") for page in pdf.pages[:max_pages])
     except Exception:
         return False
 
@@ -170,21 +172,37 @@ def _pdf_looks_like_calendar(pdf_bytes: bytes) -> bool:
     return ("CALENDARIO" in norm) and ("LIGA INTERNA" in norm)
 
 
-def _find_aqui_href_after_context(html: str, context_text: str = "Para consultar el calendario de competiciones pinche") -> Optional[str]:
-    """Find the href of the first <a> with text 'AQUÍ' that appears right after *context_text* in the HTML."""
-    norm_context = _normalize_upper_noaccents(context_text)
-    norm_html = _normalize_upper_noaccents(html)
+# Phrases that precede the "AQUÍ" link to the calendar PDF; the site rewords them each season.
+_CALENDAR_CONTEXT_TEXTS = (
+    "Para conocer los días y horarios de los partidos pincha",
+    "Para consultar el calendario de competiciones pinche",
+    "Calendario de competiciones",
+)
 
-    pos = norm_html.find(norm_context)
-    if pos == -1:
-        return None
 
-    # Search for the next <a …>AQUÍ</a> in the original HTML after the context position
-    remainder = html[pos:]
+_ACCENT_CLASSES = {"A": "[AÁ]", "E": "[EÉ]", "I": "[IÍ]", "O": "[OÓ]", "U": "[UÚÜ]", "N": "[NÑ]"}
+
+
+def _context_regex(context_text: str) -> re.Pattern[str]:
+    """Regex matching *context_text* in raw HTML, ignoring case, accents and tags between words."""
+    words = _normalize_upper_noaccents(context_text).split()
+    word_patterns = ["".join(_ACCENT_CLASSES.get(ch, re.escape(ch)) for ch in w) for w in words]
+    between = r"(?:\s|&nbsp;|<[^>]*>)+"
+    return re.compile(between.join(word_patterns), re.IGNORECASE)
+
+
+def _find_aqui_href_after_context(html: str, context_texts: Iterable[str] = _CALENDAR_CONTEXT_TEXTS) -> Optional[str]:
+    """Find the href of the first <a> with text 'AQUÍ' that appears right after one of *context_texts*."""
+    html = html_unescape(html)  # the site encodes accents as entities (d&iacute;as, AQU&Iacute;)
     anchor_re = re.compile(r'<a\s[^>]*href=["\']([^"\']+)["\'][^>]*>\s*AQU[IÍ]\s*</a>', re.IGNORECASE)
-    m = anchor_re.search(remainder)
-    if m:
-        return m.group(1)
+
+    for context_text in context_texts:
+        ctx = _context_regex(context_text).search(html)
+        if not ctx:
+            continue
+        m = anchor_re.search(html, ctx.end())
+        if m:
+            return m.group(1)
     return None
 
 
@@ -202,7 +220,7 @@ def resolve_pdf_url_from_page(page_url: str, timeout_s: int = 30) -> str:
         return href.lower().split("?")[0].endswith(".pdf")
 
     # --- Strategy 1: locate the "AQUÍ" link that follows the calendar context text ---
-    print("[LOG] Estrategia 1: buscando texto 'Para consultar el calendario de competiciones pinche' ...")
+    print("[LOG] Estrategia 1: buscando el enlace 'AQUÍ' que sigue al texto del calendario de competiciones ...")
     context_href = _find_aqui_href_after_context(html)
     if context_href:
         abs_href = urljoin(page_url, context_href)
@@ -710,10 +728,10 @@ def main(argv: list[str]) -> int:
     load_dotenv(override=False)
 
     parser = argparse.ArgumentParser(description="Download calendar PDF, extract I12 matches, write outputs, optional Telegram notify.")
-    parser.add_argument("--pdf-url", default=os.getenv("PDF_URL"), help="Calendar PDF URL (or set PDF_URL env var)")
+    parser.add_argument("--pdf-url", default=os.getenv("PDF_URL"), help="Fallback calendar PDF URL if it cannot be resolved from the page (or set PDF_URL env var)")
     parser.add_argument(
         "--page-url",
-        default=os.getenv("PAGE_URL", "https://www.ocioydeportecanal.es/es/page/view/escuela_futbol_25_26"),
+        default=os.getenv("PAGE_URL", "https://www.ocioydeportecanal.es/es/page/view/escuela_futbol"),
         help="Página donde buscar el enlace 'AQUI' (o set PAGE_URL env var)",
     )
     parser.add_argument("--team", default=os.getenv("TEAM_CODE", ""), help="Team code to filter (e.g. I12). If empty, all teams are included.")
@@ -722,16 +740,18 @@ def main(argv: list[str]) -> int:
 
     args = parser.parse_args(argv)
 
-    pdf_url = args.pdf_url
-    if not pdf_url:
-        print("[LOG] No se proporcionó URL de PDF directa. Resolviendo desde la página ...")
-        try:
-            pdf_url = resolve_pdf_url_from_page(args.page_url)
-        except Exception as e:
+    # The club publishes a new PDF (new URL) whenever the calendar changes, so a fixed
+    # PDF_URL goes stale silently. Always resolve from the page first; PDF_URL is only a fallback.
+    try:
+        pdf_url = resolve_pdf_url_from_page(args.page_url)
+    except Exception as e:
+        if not args.pdf_url:
             print(f"ERROR: No se pudo resolver el PDF desde la página: {e}", file=sys.stderr)
             return 2
-    else:
-        print(f"[LOG] Usando URL de PDF proporcionada: {pdf_url}")
+        print(f"WARNING: No se pudo resolver el PDF desde la página ({e}); usando PDF_URL de respaldo, puede estar desactualizado", file=sys.stderr)
+        pdf_url = args.pdf_url
+    if args.pdf_url and args.pdf_url != pdf_url:
+        print(f"[LOG] PDF_URL de respaldo ignorado (la página enlaza otro PDF): {args.pdf_url}")
 
     print(f"[LOG] URL del PDF resuelta: {pdf_url}")
     output_dir = Path(args.output_dir)

@@ -31,6 +31,7 @@ jobs:
 
       - name: Run bot
         env:
+          # PDF_URL is only a fallback: the bot resolves the current calendar PDF from the club page.
           # Prefer a repository variable; otherwise use a secret.
           PDF_URL: ${{ vars.PDF_URL != '' && vars.PDF_URL || secrets.PDF_URL }}
           TEAM_CODE: ${{ vars.TEAM_CODE != '' && vars.TEAM_CODE || secrets.TEAM_CODE }}
