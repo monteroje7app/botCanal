@@ -1,5 +1,5 @@
 Teams: CJ11
-Generated (UTC): 2026-10-28T07:14:46.969715+00:00
+Generated (UTC): 2026-10-30T07:12:21.186562+00:00
 Matches: 1
 
 - 2026-11-14 14:00 CJ11 ⚪ blanco Campo 3 (NORTE)
