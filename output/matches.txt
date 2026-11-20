@@ -1,5 +1,5 @@
 Teams: CJ11
-Generated (UTC): 2026-11-18T07:13:08.053366+00:00
+Generated (UTC): 2026-11-20T07:10:53.656633+00:00
 Matches: 1
 
 - 2026-11-21 12:00 CJ11 ⚪ blanco Campo 1 (PRINCIPAL)
